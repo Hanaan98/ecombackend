@@ -30,7 +30,7 @@ app.post('/send-email', upload.single('payslip'), async (req, res) => {
 
   try {
     await transporter.sendMail({
-      from: '"Ecommercesteem" <asad@ecommercesteem.com>',
+      from: `"Ecommercesteem" <${process.env.DREAMHOST_EMAIL}>`,
       to: email,
       subject: `Your Payslip`,
       text: `Hi ${name},\n\nPlease find your salary slip attached.`,
