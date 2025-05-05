@@ -55,9 +55,9 @@ app.post('/send-email', upload.single('payslip'), async (req, res) => {
 
           <div style="margin-top: 10px;">
             <p>Stay connected:</p>
-            <a href="https://www.facebook.com/ecommercesteem0><img src="https://cdn-icons-png.flaticon.com/24/145/145802.png" alt="Facebook" /></a>
-            <a href="https://www.instagram.com/ecommercesteem/"><img src="https://cdn-icons-png.flaticon.com/24/2111/2111463.png" alt="Instagram" /></a>
-            <a href="https://www.linkedin.com/company/ecommercesteem-ltd/"><img src="https://cdn-icons-png.flaticon.com/24/145/145807.png" alt="LinkedIn" /></a>
+            <a href="https://www.facebook.com/ecommercesteem0><img src="cid:icon" alt="Icon" /></a>
+            <a href="https://www.instagram.com/ecommercesteem/"><img src="cid:instagram" alt="Instagram" /></a>
+            <a href="https://www.linkedin.com/company/ecommercesteem-ltd/"><img src="cid:linkedin" alt="LinkedIn" /></a>
           </div>
         </div>
       `,
@@ -69,10 +69,26 @@ app.post('/send-email', upload.single('payslip'), async (req, res) => {
         },
         {
           filename: 'logo.png',
-          path: __dirname + '/public/logo.png', 
+          path: __dirname + '/public/logo.png',
           cid: 'logo'
+        },
+        {
+          filename: 'icon.png',
+          path: __dirname + '/public/icon.png',
+          cid: 'icon'
+        },
+        {
+          filename: 'instagram.png',
+          path: __dirname + '/public/instagram.png',
+          cid: 'instagram'
+        },
+        {
+          filename: 'linkedin.png',
+          path: __dirname + '/public/linkedin.png',
+          cid: 'linkedin'
         }
       ]
+      
     });
 
     res.send("Email sent successfully");
