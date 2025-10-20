@@ -1,81 +1,93 @@
+// server.js
+require('dotenv').config();
 
-const path = require("path");
-const express = require("express");
-const nodemailer = require("nodemailer");
-const multer = require("multer");
-const cors = require("cors");
-require("dotenv").config();
+const express = require('express');
+const nodemailer = require('nodemailer');
+const multer = require('multer');
+const cors = require('cors');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// --- middleware ---
+// --- Middleware
 app.use(cors());
-// Parse JSON in case you add JSON routes later
-app.use(express.json());
-// Serve /public so inline images can be fetched if needed in future
-app.use("/public", express.static(path.join(__dirname, "public")));
+app.use(express.json({ limit: '1mb' })); // for JSON fallbacks
+app.use(express.urlencoded({ extended: true, limit: '1mb' })); // for form fallbacks
 
-// Multer: keep PDF in memory
+// --- Multer config (PDF only, size limit 5MB)
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+      return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Only PDF files are allowed'));
+    }
+    cb(null, true);
+  }
+});
 
-// --- helpers ---
-const makeTransportConfig = (use465 = false) => ({
-  host: process.env.SMTP_HOST || "smtp.dreamhost.com",
-  port: use465 ? 465 : Number(process.env.SMTP_PORT || 587),
-  secure: use465, // true for 465, false for 587 (STARTTLS)
+// --- Nodemailer transporter (create once)
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.dreamhost.com',
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: false, // STARTTLS on 587
   auth: {
     user: process.env.DREAMHOST_EMAIL,
-    pass: process.env.DREAMHOST_PASS,
+    pass: process.env.DREAMHOST_PASS
   },
-  // Be explicit about timeouts to avoid hanging
-  connectionTimeout: 15000, // time to establish TCP
-  greetingTimeout: 10000,   // time waiting for server greeting
-  socketTimeout: 20000,     // total inactivity timeout during send
-  tls: {
-    servername: process.env.SMTP_HOST || "smtp.dreamhost.com",
-    // If you are behind a corporate proxy doing TLS interception and just testing,
-    // you can _temporarily_ add: rejectUnauthorized: false
-  },
+  logger: Boolean(process.env.MAIL_LOGGER || false), // set MAIL_LOGGER=1 to enable
+  debug: Boolean(process.env.MAIL_DEBUG || false)     // set MAIL_DEBUG=1 to enable verbose SMTP logs
 });
 
-// Optional: simple logger
-const log = (...args) => console.log(new Date().toISOString(), ...args);
-
-// --- routes ---
-app.get("/", (_req, res) => {
-  res.send("Email sender is running.");
+// Optional: listen to nodemailer logs (when debug enabled)
+transporter.on('log', info => {
+  if (process.env.MAIL_DEBUG) console.log('[SMTP LOG]', info);
+});
+transporter.on('error', err => {
+  console.error('[SMTP ERROR EVENT]', err);
 });
 
-app.post("/send-email", upload.single("payslip"), async (req, res) => {
+// --- Health check
+app.get('/health', (req, res) => {
+  res.json({ ok: true, uptime: process.uptime() });
+});
+
+// --- Email route
+app.post('/send-email', upload.single('payslip'), async (req, res, next) => {
   try {
     const { name, email } = req.body;
     const payslipPdf = req.file;
 
+    // Basic validation
     if (!email || !name || !payslipPdf) {
-      return res.status(400).send("Missing required data");
+      const missing = [
+        !name ? 'name' : null,
+        !email ? 'email' : null,
+        !payslipPdf ? 'payslip (PDF)' : null
+      ].filter(Boolean);
+      return res.status(400).json({ ok: false, error: 'Missing required data', missing });
     }
 
-    // Try 587 STARTTLS first, then fall back to 465 implicit TLS if 587 is blocked
-    let transporter;
-    try {
-      log("Creating SMTP transporter on 587 (STARTTLS)...");
-      transporter = nodemailer.createTransport(makeTransportConfig(false));
-      await transporter.verify(); // checks network + auth + TLS
-      log("587 verify OK");
-    } catch (e587) {
-      log("587 verify failed, falling back to 465:", e587 && e587.code || e587 && e587.message);
-      transporter = nodemailer.createTransport(makeTransportConfig(true));
-      await transporter.verify();
-      log("465 verify OK");
+    // Additional content validation (MIME already checked)
+    if (payslipPdf.mimetype !== 'application/pdf') {
+      return res.status(400).json({ ok: false, error: 'Only PDF files are allowed' });
     }
+
+    // From should generally be the authenticated user
+    const fromAddress = process.env.DREAMHOST_EMAIL;
+    if (!fromAddress) {
+      return res.status(500).json({ ok: false, error: 'Email sender is not configured (DREAMHOST_EMAIL missing)' });
+    }
+
+    // Build absolute paths for CID images
+    const publicDir = path.join(__dirname, 'public');
 
     const html = `
       <div style="font-family: Arial, sans-serif; color: #000;">
-        <p>Hi ${name},</p>
+        <p>Hi ${escapeHtml(name)},</p>
         <p>Please find your salary slip attached.</p>
-
         <br/>
         <p>Best regards,<br/>Asad Niaz</p>
 
@@ -93,62 +105,102 @@ app.post("/send-email", upload.single("payslip"), async (req, res) => {
 
         <div style="margin-top: 10px;">
           <p>Stay connected:</p>
-          <a href="https://www.facebook.com/ecommercesteem0"><img src="cid:icon" alt="Icon" /></a>
+          <a href="https://www.facebook.com/ecommercesteem0"><img src="cid:icon" alt="Facebook" /></a>
           <a href="https://www.instagram.com/ecommercesteem/"><img src="cid:instagram" alt="Instagram" /></a>
           <a href="https://www.linkedin.com/company/ecommercesteem-ltd/"><img src="cid:linkedin" alt="LinkedIn" /></a>
         </div>
       </div>
     `;
 
-    await transporter.sendMail({
-      from: `"Ecommercesteem" <${process.env.DREAMHOST_EMAIL}>`,
+    const info = await transporter.sendMail({
+      from: `"Ecommercesteem" <${fromAddress}>`,
       to: email,
-      subject: "Your Payslip",
+      subject: `Your Payslip`,
       html,
       attachments: [
         {
-          filename: `Payslip-${name}.pdf`,
+          filename: `Payslip-${sanitizeFilename(name)}.pdf`,
           content: payslipPdf.buffer,
-          contentType: "application/pdf",
+          contentType: 'application/pdf'
         },
-        {
-          filename: "logo.png",
-          path: path.join(__dirname, "public", "logo.png"),
-          cid: "logo",
-        },
-        {
-          filename: "icon.png",
-          path: path.join(__dirname, "public", "icon.png"),
-          cid: "icon",
-        },
-        {
-          filename: "instagram.png",
-          path: path.join(__dirname, "public", "instagram.png"),
-          cid: "instagram",
-        },
-        {
-          filename: "linkedin.png",
-          path: path.join(__dirname, "public", "linkedin.png"),
-          cid: "linkedin",
-        },
-      ],
+        { filename: 'logo.png',     path: path.join(publicDir, 'logo.png'),     cid: 'logo' },
+        { filename: 'icon.png',     path: path.join(publicDir, 'icon.png'),     cid: 'icon' },
+        { filename: 'instagram.png',path: path.join(publicDir, 'instagram.png'),cid: 'instagram' },
+        { filename: 'linkedin.png', path: path.join(publicDir, 'linkedin.png'), cid: 'linkedin' }
+      ]
     });
 
-    res.send("Email sent successfully");
+    // If we got here, SMTP accepted the message (queued by remote)
+    return res.json({
+      ok: true,
+      message: 'Email handed to SMTP server',
+      messageId: info.messageId,
+      response: info.response
+    });
   } catch (err) {
-    // Include key error properties to help diagnose ETIMEDOUT vs auth vs TLS
-    log("send-email error:", {
+    // Classify common errors
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ ok: false, error: 'PDF too large (max 5MB)' });
+      }
+      return res.status(400).json({ ok: false, error: `Upload error: ${err.message}` });
+    }
+
+    // Nodemailer / network errors
+    const isConnErr = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ESOCKET', 'EAUTH'].includes(err.code);
+    const status = isConnErr ? 502 : 500;
+    console.error('[SEND-EMAIL ERROR]', {
       name: err.name,
       code: err.code,
-      command: err.command,
       message: err.message,
-      response: err.response,
+      stack: err.stack
     });
-    res.status(500).send("Failed to send email");
+    return res.status(status).json({
+      ok: false,
+      error: 'Failed to send email',
+      details: process.env.NODE_ENV === 'production' ? undefined : {
+        name: err.name,
+        code: err.code,
+        message: err.message
+      }
+    });
   }
 });
 
-// --- start server ---
-app.listen(PORT, () => {
-  log(`Server running on http://localhost:${PORT}`);
+// --- Global error handler (last)
+app.use((err, req, res, next) => {
+  console.error('[UNCAUGHT ERROR]', err);
+  res.status(500).json({ ok: false, error: 'Unexpected server error' });
 });
+
+// --- Startup: verify transporter before listening
+(async () => {
+  try {
+    if (!process.env.DREAMHOST_EMAIL || !process.env.DREAMHOST_PASS) {
+      throw new Error('Missing DREAMHOST_EMAIL or DREAMHOST_PASS in environment');
+    }
+    console.log('Verifying SMTP transport...');
+    const verifyRes = await transporter.verify();
+    console.log('SMTP transport verified:', verifyRes);
+
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('SMTP verification failed. Server not started.');
+    console.error(err);
+    process.exit(1);
+  }
+})();
+
+// --- Helpers
+function sanitizeFilename(str = '') {
+  return String(str).replace(/[\/\\?%*:|"<>]/g, '-').slice(0, 100);
+}
+function escapeHtml(str = '') {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
